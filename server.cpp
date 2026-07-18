@@ -30,6 +30,38 @@ std::string handleCommand(std::vector<std::string>& args, std::unordered_map<std
         std::string x = it->second;
         return "$"+std::to_string(x.length())+"\r\n"+x+"\r\n";
     }
+    else if (args[0]=="PING"){
+        if (args.size()!=1){
+            return "-ERR wrong number of arguments for 'PING'\r\n";
+        }
+        return "+PONG\r\n";
+    }
+    else if (args[0]=="DEL"){
+        if (args.size()<2){
+            return "-ERR wrong number of arguments for 'DEL'\r\n";
+        }
+        int deleted = 0;
+        for (int i =1; i < args.size();i++){
+            deleted += store.erase(args[i]);
+        }
+        return ":"+std::to_string(deleted)+"\r\n";
+    }
+    else if (args[0]=="EXISTS"){
+        if (args.size()<2){
+            return "-ERR wrong number of arguments for 'EXISTS'\r\n";
+        }
+        int existing = 0;
+        for (int i = 1; i< args.size();i++){
+            existing += store.count(args[i]);
+        }
+        return ":"+std::to_string(existing)+"\r\n";
+    }
+    else if (args[0]=="DBSIZE"){
+        if (args.size()!=1){
+            return "-ERR wrong number of arguments for 'DBSIZE'\r\n";
+        }
+        return ":"+std::to_string(store.size()) + "\r\n";
+    }
     else{
         return "error";
     }

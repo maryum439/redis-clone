@@ -11,6 +11,7 @@
 #include <chrono>
 #include <sys/epoll.h>
 #include <fcntl.h>
+#include <errno.h>
 struct Value {
     enum Type {
         STRING,
@@ -214,7 +215,7 @@ std::string handleCommand(std::vector<std::string>& args, std :: unordered_map<s
         if (it->second.type!=Value::HASH){
             return "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
         }
-        else if (it!=store.end()&&it->second.type==Value::HASH){
+        else{
             bool newField =it->second.hashValue.find(args[2])== it->second.hashValue.end();
             it->second.hashValue[args[2]] = args[3];
             return newField ? ":1\r\n" : ":0\r\n";
@@ -350,11 +351,40 @@ bool parseRESP(std :: string & buffer,std::vector<std::string>&args){
     buffer.erase(0, position);
     return true;
     }
+bool flushOutput(
+    int fd,
+    std::unordered_map<int, std::string>& clientOutputBuffers
+) {
+    std::string& output = clientOutputBuffers[fd];
 
+    while (!output.empty()) {
+
+        ssize_t bytes =
+            write(fd, output.data(), output.size());
+
+        if (bytes > 0) {
+            output.erase(0, bytes);
+        }
+        else if (bytes == -1) {
+
+            if (errno == EAGAIN ||
+                errno == EWOULDBLOCK) {
+
+                return false;
+            }
+
+            perror("write failed");
+            return false;
+        }
+    }
+
+    return true;
+}
 int main (){
 std::unordered_map<std::string, long long> expiry;
 std::unordered_map<std::string, Value> store;
 std::unordered_map<int, std::string> clientBuffers;
+std::unordered_map<int, std::string> clientOutputBuffers;
 int server_fd = socket(AF_INET,SOCK_STREAM,0);
 if (server_fd < 0){
     perror("Socket failed");
@@ -405,13 +435,16 @@ while(1){
             printf("New client connected: %d\n", client_fd);
         }
         else{
+            if (events[i].events & EPOLLIN) {
             char buffer[1024];
             ssize_t bytes = read(fd, buffer, sizeof(buffer));
             if (bytes ==0){
                 close(fd);
                 epoll_ctl(epoll_fd,EPOLL_CTL_DEL,fd,NULL);
                 clientBuffers.erase(fd);
+                clientOutputBuffers.erase(fd);
             }
+        
             else if (bytes >0){
                 printf("Received %zd bytes: %.*s\n", bytes, (int)bytes, buffer);
                 clientBuffers[fd].append(buffer, bytes);
@@ -426,19 +459,32 @@ while(1){
                     printf("arg[%zu] = %s\n", i, args[i].c_str());
                 }
                 std::string reply = handleCommand(args, store,expiry);
-                if (write(fd, reply.c_str(), reply.size())<0){
-                    perror("writing failed");
-                   break;
-                }
+                clientOutputBuffers[fd] +=reply;
+                struct epoll_event clientEvent;
+                clientEvent.events = EPOLLIN | EPOLLOUT;
+                clientEvent.data.fd = fd;
+                if (epoll_ctl(epoll_fd,EPOLL_CTL_MOD,fd,&clientEvent) <0) {
+                    perror("epoll_ctl MOD failed");
                 }
             }
+        }
+    
             else if (bytes < 0){
-                perror("read failed");
+                if (errno != EAGAIN &&errno != EWOULDBLOCK){
+                    perror("read failed");
             }
         } 
-   }
+   }}
+   if (events[i].events & EPOLLOUT){
+    bool flushed =flushOutput(fd, clientOutputBuffers);
+    if (flushed &&clientOutputBuffers[fd].empty()){
+        struct epoll_event clientEvent;
+        clientEvent.events = EPOLLIN;
+        clientEvent.data.fd = fd;
+        epoll_ctl(epoll_fd,EPOLL_CTL_MOD,fd,&clientEvent);
 }
+}
+    }}
 close(epoll_fd);
 close(server_fd);
-}
-
+}     

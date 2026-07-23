@@ -301,38 +301,60 @@ std::string handleCommand(std::vector<std::string>& args, std :: unordered_map<s
         return "error";
     }
 }   
-std::vector<std::string> parseRESP(char* buffer, ssize_t bytes){
-    std::vector<std::string> args;
-    if (buffer[0]!='*'){
-        printf("not parseable\n");
-        return args;
+bool parseRESP(std :: string & buffer,std::vector<std::string>&args){
+    size_t position = 0;
+    if (buffer.size()<1){
+        return false;
     }
-    char* pointer = buffer+1;
-    char* end;
-    int argc = strtol(pointer,&end,10);
-    if (argc <= 0){
-        printf("no strings found");
-        return args;
+    if (buffer[0]!= '*'){
+        printf ("Not parseable\n");
+        return false;
     }
-    pointer = end+2;
-    for (int i = 0; i < argc; i++){
-        if (*pointer != '$'){
-            printf("Expected bulk string\n");
-            return args;
+    position++;
+    size_t lineEnd = buffer.find("\r\n",position);
+    if (lineEnd == std::string::npos){
+        return false;
+    }
+    int argc = std::stoi(buffer.substr(position,lineEnd-position));
+    if (argc<=0){
+        return false;
+    }
+    position = lineEnd+2;
+    for (int i = 0; i < argc;i++){
+        if (position >= buffer.size()){
+            return false;
         }
-        pointer++;
-        int len = strtol(pointer,&end,10);
-        pointer = end+2;
-        std :: string arg(pointer,len);
+        if (buffer[position]!='$'){
+            printf("Expected bulk string\n");
+            return false;
+        }
+        position++;
+        lineEnd = buffer.find("\r\n", position);
+        if (lineEnd == std::string::npos){
+            return false;
+        }
+        int length = std::stoi(buffer.substr(position, lineEnd - position));
+        position = lineEnd+2;
+        if (buffer.size() < position + length + 2){
+            return false;
+        }
+        std::string arg =buffer.substr(position, length);
         args.push_back(arg);
-        pointer = pointer + len;
-        pointer = pointer + 2;
+        position+=length;
+        if (buffer.substr(position, 2) != "\r\n"){
+            printf("Expected CRLF after bulk string\n");
+            return false;
+        }
+        position +=2;
     }
-    return args;
-}
+    buffer.erase(0, position);
+    return true;
+    }
+
 int main (){
 std::unordered_map<std::string, long long> expiry;
 std::unordered_map<std::string, Value> store;
+std::unordered_map<int, std::string> clientBuffers;
 int server_fd = socket(AF_INET,SOCK_STREAM,0);
 if (server_fd < 0){
     perror("Socket failed");
@@ -388,21 +410,33 @@ while(1){
             if (bytes ==0){
                 close(fd);
                 epoll_ctl(epoll_fd,EPOLL_CTL_DEL,fd,NULL);
+                clientBuffers.erase(fd);
             }
             else if (bytes >0){
                 printf("Received %zd bytes: %.*s\n", bytes, (int)bytes, buffer);
-                std::vector<std::string> args = parseRESP(buffer, bytes);
+                clientBuffers[fd].append(buffer, bytes);
+                printf ("Client %d buffer now contains %zu bytes\n",fd,clientBuffers[fd].size());
+                while (true){
+                std::vector<std::string> args ;
+                bool complete = parseRESP(clientBuffers[fd],args);
+                if (!complete){
+                    break;
+                }
                 for (size_t i = 0; i < args.size(); i++) {
                     printf("arg[%zu] = %s\n", i, args[i].c_str());
                 }
                 std::string reply = handleCommand(args, store,expiry);
                 if (write(fd, reply.c_str(), reply.size())<0){
                     perror("writing failed");
-                    break;
+                   break;
+                }
+                }
             }
-        }
-    } 
-}
+            else if (bytes < 0){
+                perror("read failed");
+            }
+        } 
+   }
 }
 close(epoll_fd);
 close(server_fd);

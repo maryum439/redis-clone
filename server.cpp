@@ -9,6 +9,8 @@
 #include <cstdlib> 
 #include <unordered_map>
 #include <chrono>
+#include <sys/epoll.h>
+#include <fcntl.h>
 struct Value {
     enum Type {
         STRING,
@@ -331,7 +333,6 @@ std::vector<std::string> parseRESP(char* buffer, ssize_t bytes){
 int main (){
 std::unordered_map<std::string, long long> expiry;
 std::unordered_map<std::string, Value> store;
-char buffer[1024];
 int server_fd = socket(AF_INET,SOCK_STREAM,0);
 if (server_fd < 0){
     perror("Socket failed");
@@ -349,36 +350,61 @@ if (listen (server_fd,10)<0){
     perror("listen failed");
     return 1;
 }
-while (1){
-int client_fd = accept (server_fd,NULL,NULL);
-if (client_fd <0){
-    perror("Accepting failed");
-    continue;
+int flags = fcntl(server_fd,F_GETFL,0);
+fcntl(server_fd,F_SETFL,flags|O_NONBLOCK);
+int epoll_fd = epoll_create1(0);
+struct epoll_event event;
+event.events = EPOLLIN;
+event.data.fd = server_fd;
+if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, server_fd, &event) < 0){
+    perror("epoll_ctl failed");
+    return 1;
 }
+struct epoll_event events[10];
 while(1){
-ssize_t bytes = read (client_fd,buffer,sizeof(buffer));
-if (bytes == 0){
-    printf("client disconnected\n");
-    break;
+    int n = epoll_wait(epoll_fd,events,10,-1);
+    for (int i = 0;i<n;i++){
+        int fd = events[i].data.fd;
+        if (fd== server_fd){
+            int client_fd = accept(server_fd,NULL,NULL);
+            if (client_fd<0){
+                perror("accept failed");
+                continue;
+            }
+            flags = fcntl(client_fd,F_GETFL,0);
+            fcntl(client_fd,F_SETFL,flags|O_NONBLOCK);
+            event.events = EPOLLIN;
+            event.data.fd = client_fd;
+            if (epoll_ctl(epoll_fd,EPOLL_CTL_ADD,client_fd,&event)<0){
+                perror("epoll_ctl client failed");
+                close (client_fd);
+                continue;
+            }
+            printf("New client connected: %d\n", client_fd);
+        }
+        else{
+            char buffer[1024];
+            ssize_t bytes = read(fd, buffer, sizeof(buffer));
+            if (bytes ==0){
+                close(fd);
+                epoll_ctl(epoll_fd,EPOLL_CTL_DEL,fd,NULL);
+            }
+            else if (bytes >0){
+                printf("Received %zd bytes: %.*s\n", bytes, (int)bytes, buffer);
+                std::vector<std::string> args = parseRESP(buffer, bytes);
+                for (size_t i = 0; i < args.size(); i++) {
+                    printf("arg[%zu] = %s\n", i, args[i].c_str());
+                }
+                std::string reply = handleCommand(args, store,expiry);
+                if (write(fd, reply.c_str(), reply.size())<0){
+                    perror("writing failed");
+                    break;
+            }
+        }
+    } 
 }
-if (bytes < 0){
-    perror("reading failed");
-    break;
 }
-printf("Received %zd bytes: %.*s\n", bytes, (int)bytes, buffer);
-std::vector<std::string> args = parseRESP(buffer, bytes);
-for (size_t i = 0; i < args.size(); i++) {
-    printf("arg[%zu] = %s\n", i, args[i].c_str());
-}
-std::string reply = handleCommand(args, store,expiry);
-if (write(client_fd, reply.c_str(), reply.size())<0){
-    perror("writing failed");
-    break;
-}
-}
-close(client_fd);
-
-}
+close(epoll_fd);
 close(server_fd);
 }
 

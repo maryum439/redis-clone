@@ -232,13 +232,14 @@ Redis Clone
 ### Compile
 
 ```bash
-g++ -std=c++17 -o redis_clone main.cpp
+g++ -std=c++17 -Wall -Wextra server.cpp -o server
+
 ```
 
 ### Run
 
 ```bash
-./redis_clone
+./server
 ```
 
 The server listens on port:

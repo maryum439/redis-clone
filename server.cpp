@@ -299,7 +299,7 @@ std::string handleCommand(std::vector<std::string>& args, std :: unordered_map<s
     return ":" + std::to_string(remaining) + "\r\n";
     }
     else{
-        return "error";
+        return "-ERR unknown command\r\n";
     }
 }   
 bool parseRESP(std :: string & buffer,std::vector<std::string>&args){
